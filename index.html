@@ -47,59 +47,59 @@ input[type=range]{width:100%;height:30px;accent-color:var(--accent);touch-action
 <script type="module">
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {MarchingCubes} from 'three/addons/objects/MarchingCubes.js';
 import {mergeVertices} from 'three/addons/utils/BufferGeometryUtils.js';
 const $=id=>document.getElementById(id),canvas=$('view');const scene=new THREE.Scene();scene.background=new THREE.Color(0x111318);const camera=new THREE.PerspectiveCamera(42,1,.1,2000);camera.position.set(260,210,310);const renderer=new THREE.WebGLRenderer({canvas,antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.outputColorSpace=THREE.SRGBColorSpace;const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.target.set(0,90,0);scene.add(new THREE.HemisphereLight(0xffffff,0x49404a,2));const key=new THREE.DirectionalLight(0xffffff,2.4);key.position.set(150,260,180);scene.add(key);const fill=new THREE.PointLight(0xffb45e,90,500);fill.position.set(0,130,0);scene.add(fill);const grid=new THREE.GridHelper(420,21,0x484d59,0x282c35);grid.position.y=-.5;scene.add(grid);const assembly=new THREE.Group();scene.add(assembly);let parts={};
 function mat(color,metal=0,rough=.55){return new THREE.MeshStandardMaterial({color,metalness:metal,roughness:rough,side:THREE.DoubleSide})}const ivory=mat(0xe9d8b8),dark=mat(0x343943,.25),orange=mat(0xe99a48,.25);
 function addMesh(name,geo,material,pos=[0,0,0]){let m=new THREE.Mesh(geo,material);m.name=name;m.position.set(...pos);assembly.add(m);parts[name]=m;return m}function boxGeo(x,y,z){return new THREE.BoxGeometry(x,y,z)}function cylinder(r1,r2,h,seg=96){return new THREE.CylinderGeometry(r1,r2,h,seg,1,false)}
 function makeGyroid(h,d,cell,thick,openness){
- // True implicit gyroid sheet: |sinX cosY + sinY cosZ + sinZ cosX| <= level.
- // Marching tetrahedra polygons are angularly ordered to prevent folded/shard-like faces.
- const step=2.0,nx=Math.ceil(d/step)+1,ny=nx,nz=Math.ceil(h/step)+1;
- const R=d/2,outer=R-1.2,inner=R-Math.max(10,Math.min(18,d*.105));
- const sx=d/(nx-1),sy=d/(ny-1),sz=h/(nz-1),wave=2*Math.PI/cell;
- const values=new Float32Array(nx*ny*nz),idx=(i,j,k)=>(k*ny+j)*nx+i;
- const level=Math.max(.16,Math.min(.62,.18+(thick-1.2)*.105+(openness-.34)*.28));
- for(let k=0;k<nz;k++){const z=k*sz,Z=z*wave;
-  for(let j=0;j<ny;j++){const y=j*sy-R,Y=y*wave;
-   for(let i=0;i<nx;i++){const x=i*sx-R,r=Math.hypot(x,y),X=x*wave;
-    const g=Math.sin(X)*Math.cos(Y)+Math.sin(Y)*Math.cos(Z)+Math.sin(Z)*Math.cos(X);
-    values[idx(i,j,k)]=Math.max(Math.abs(g)-level,r-outer,inner-r,-z,z-h);
+ // Sheet-TPMS: create a physical-thickness band around the zero-level Gyroid
+ // and clip that solid to a finite cylinder. Three.js MarchingCubes extracts
+ // the isosurface from the sampled scalar field; no hand-built triangles.
+ const resolution=64, material=ivory, maxPolyCount=320000;
+ const mc=new MarchingCubes(resolution,material,false,false,maxPolyCount);
+ mc.isolation=0;
+ const k=2*Math.PI/cell, halfD=d/2, halfH=h/2;
+ const wall=Math.max(0.8,Math.min(4.5,thick));
+ const thresholdAdjust=(openness-.34)*.12;
+ for(let iz=0;iz<resolution;iz++){
+  const zn=(iz/(resolution-1))*2-1, z=zn*halfH;
+  for(let iy=0;iy<resolution;iy++){
+   const yn=(iy/(resolution-1))*2-1, y=yn*halfD;
+   for(let ix=0;ix<resolution;ix++){
+    const xn=(ix/(resolution-1))*2-1, x=xn*halfD;
+    const X=k*x,Y=k*y,Z=k*z;
+    const sx=Math.sin(X),sy=Math.sin(Y),sz=Math.sin(Z);
+    const cx=Math.cos(X),cy=Math.cos(Y),cz=Math.cos(Z);
+    const g=sx*cy+sy*cz+sz*cx;
+    const gx=k*(cx*cy-sz*sx),gy=k*(-sx*sy+cy*cz),gz=k*(-sy*sz+cz*cx);
+    const grad=Math.max(1e-5,Math.hypot(gx,gy,gz));
+    // First-order signed-distance estimate to the minimal surface.
+    const distance=Math.abs(g)/grad;
+    const sheet=distance-(wall*.5+thresholdAdjust);
+    // Clip the sheet to a cylindrical envelope, including flat top/bottom cuts.
+    const radial=Math.hypot(x,y)-halfD+1.0;
+    const axial=Math.abs(z)-halfH+1.0;
+    const field=Math.max(-sheet, -radial, -axial);
+    mc.setCell(ix,iy,iz,field);
    }
   }
  }
- const verts=[],tets=[[0,5,1,6],[0,1,2,6],[0,2,3,6],[0,3,7,6],[0,7,4,6],[0,4,5,6]];
- const corners=[[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1]];
- const edges=[[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]];
- const interp=(a,b,va,vb)=>{const t=va/(va-vb);return[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t]};
- const emit=(poly)=>{
-  if(poly.length<3)return;
-  const c=[0,0,0];for(const p of poly){c[0]+=p[0]/poly.length;c[1]+=p[1]/poly.length;c[2]+=p[2]/poly.length}
-  let n=[0,0,0],u,v;
-  for(let q=1;q<poly.length-1;q++){const a=poly[q].map((x,i)=>x-poly[0][i]),b=poly[q+1].map((x,i)=>x-poly[0][i]);n=[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];const l=Math.hypot(...n);if(l>1e-9){n=n.map(x=>x/l);break}}
-  if(Math.hypot(...n)<1e-9)return;
-  u=poly[0].map((x,i)=>x-c[i]);let ul=Math.hypot(...u);if(ul<1e-9)return;u=u.map(x=>x/ul);
-  v=[n[1]*u[2]-n[2]*u[1],n[2]*u[0]-n[0]*u[2],n[0]*u[1]-n[1]*u[0]];
-  poly.sort((a,b)=>Math.atan2(a.reduce((s,x,i)=>s+(x-c[i])*v[i],0),a.reduce((s,x,i)=>s+(x-c[i])*u[i],0))-Math.atan2(b.reduce((s,x,i)=>s+(x-c[i])*v[i],0),b.reduce((s,x,i)=>s+(x-c[i])*u[i],0)));
-  for(let q=1;q<poly.length-1;q++)verts.push(...poly[0],...poly[q],...poly[q+1]);
- };
- for(let k=0;k<nz-1;k++)for(let j=0;j<ny-1;j++)for(let i=0;i<nx-1;i++){
-  const p=corners.map(([dx,dy,dz])=>[(i+dx)*sx-R,(j+dy)*sy-R,(k+dz)*sz]);
-  const val=corners.map(([dx,dy,dz])=>values[idx(i+dx,j+dy,k+dz)]);
-  for(const tet of tets){const tv=tet.map(q=>val[q]);if(Math.min(...tv)>0||Math.max(...tv)<0)continue;
-   const poly=[];
-   for(const [ea,eb] of edges){const a=tet[ea],b=tet[eb],va=val[a],vb=val[b];if((va<0&&vb>=0)||(vb<0&&va>=0)){
-    const pt=interp(p[a],p[b],va,vb);if(!poly.some(q=>Math.hypot(q[0]-pt[0],q[1]-pt[1],q[2]-pt[2])<1e-6))poly.push(pt);
-   }}
-   emit(poly);
-  }
- }
- const raw=new THREE.BufferGeometry();raw.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));
- const smooth=mergeVertices(raw,1e-4);raw.dispose();smooth.computeVertexNormals();
- return smooth;
+ mc.update();
+ const geometry=mc.geometry;
+ geometry.setDrawRange(0,mc.count);
+ geometry.computeBoundingBox();
+ geometry.computeBoundingSphere();
+ // MarchingCubes works in a normalized [-1,1] cube. The caller scales the mesh
+ // to the requested physical diameter and height.
+ geometry.userData.tpmsResolution=resolution;
+ geometry.userData.triangleCount=mc.count/3;
+ mc.geometry=null;
+ return geometry;
 }
 function clear(){while(assembly.children.length){let o=assembly.children.pop();if(o.geometry)o.geometry.dispose()}}
 function buildBayonet(y,diam,clearance,lugs){const rad=diam/2;addMesh('Байонетное кольцо',cylinder(rad,rad,5,96),dark,[0,y,0]);for(let n=0;n<lugs;n++){let a=n*Math.PI*2/lugs,lug=addMesh('Выступ байонета '+(n+1),boxGeo(9,4,7),orange,[Math.cos(a)*(rad-2),y+3,Math.sin(a)*(rad-2)]);lug.rotation.y=-a}}
-function build(){const h=+$('height').value,d=+$('diam').value,cell=+$('cell').value,t=+$('thick').value,op=+$('open').value,base=$('base').value,clearance=+$('clearance').value,lugs=+$('lugs').value;$('status').textContent='Генерация Gyroid-сетки…';clear();parts={};addMesh('Абажур Gyroid',makeGyroid(h,d,cell,t,op),ivory);const neckD=44,neckH=13;addMesh('Шейка абажура',cylinder(neckD/2,neckD/2,neckH),ivory,[0,-neckH/2+1,0]);buildBayonet(-neckH+3,neckD,clearance,lugs);if(base==='puck'){const pd=+$('pdiam').value,ph=+$('pheight').value;addMesh('Основание таблетка',cylinder(pd/2,pd/2,ph),dark,[0,-ph/2-neckH-2,0]);addMesh('Верхний буртик основания',cylinder(23,23,5),orange,[0,-ph-neckH+1,0])}else{const span=+$('span').value,leg=+$('leg').value;addMesh('Центральная ступица',cylinder(31,31,18),dark,[0,-27-neckH,0]);addMesh('Посадочная площадка',cylinder(24,24,5),orange,[0,-16-neckH,0]);for(let n=0;n<3;n++){let a=n*Math.PI*2/3,m=addMesh('Ножка '+(n+1),new THREE.BoxGeometry(leg,leg,span*.58),dark,[Math.cos(a)*span*.25,-35-neckH,Math.sin(a)*span*.25]);m.rotation.y=-a;m.rotation.x=-.12}}const md=+$('mountD').value,mh=+$('mountH').value;addMesh('Крепёж LED / E27 (эскиз)',cylinder(md/2,md/2,mh),orange,[0,mh/2+2,0]);addMesh('Канал кабеля (визуальный маркер)',cylinder(+$('cable').value/2,+$('cable').value/2,35,24),dark,[0,-h-25,0]);$('status').textContent=`Готово. Абажур ${d} × ${h} мм · ячейка ${cell} мм · основание: ${base==='puck'?'таблетка':'тренога'}. Посадки предварительные.`;updateLabels()}
+function build(){const h=+$('height').value,d=+$('diam').value,cell=+$('cell').value,t=+$('thick').value,op=+$('open').value,base=$('base').value,clearance=+$('clearance').value,lugs=+$('lugs').value;$('status').textContent='Расчёт математической поверхности TPMS…';clear();parts={};const shade=addMesh('Абажур Gyroid',makeGyroid(h,d,cell,t,op),ivory,[0,h/2,0]);shade.scale.set(d/2,h/2,d/2);const neckD=44,neckH=13;addMesh('Шейка абажура',cylinder(neckD/2,neckD/2,neckH),ivory,[0,-neckH/2+1,0]);buildBayonet(-neckH+3,neckD,clearance,lugs);if(base==='puck'){const pd=+$('pdiam').value,ph=+$('pheight').value;addMesh('Основание таблетка',cylinder(pd/2,pd/2,ph),dark,[0,-ph/2-neckH-2,0]);addMesh('Верхний буртик основания',cylinder(23,23,5),orange,[0,-ph-neckH+1,0])}else{const span=+$('span').value,leg=+$('leg').value;addMesh('Центральная ступица',cylinder(31,31,18),dark,[0,-27-neckH,0]);addMesh('Посадочная площадка',cylinder(24,24,5),orange,[0,-16-neckH,0]);for(let n=0;n<3;n++){let a=n*Math.PI*2/3,m=addMesh('Ножка '+(n+1),new THREE.BoxGeometry(leg,leg,span*.58),dark,[Math.cos(a)*span*.25,-35-neckH,Math.sin(a)*span*.25]);m.rotation.y=-a;m.rotation.x=-.12}}const md=+$('mountD').value,mh=+$('mountH').value;addMesh('Крепёж LED / E27 (эскиз)',cylinder(md/2,md/2,mh),orange,[0,mh/2+2,0]);addMesh('Канал кабеля (визуальный маркер)',cylinder(+$('cable').value/2,+$('cable').value/2,35,24),dark,[0,-h-25,0]);$('status').textContent=`Готово. Sheet Gyroid TPMS · ${d} × ${h} мм · ячейка ${cell} мм · сетка 64³. Посадки предварительные.`;updateLabels()}
 function updateLabels(){for(const[id,out]of[['height','hV'],['diam','dV'],['cell','cV'],['thick','tV'],['open','oV'],['pdiam','pdV'],['pheight','phV'],['span','spanV'],['leg','legV'],['clearance','clrV']])$(out).textContent=$(id).value}
 function resize(){let w=canvas.clientWidth,h=canvas.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}function animate(){requestAnimationFrame(animate);controls.update();renderer.render(scene,camera)}new ResizeObserver(resize).observe(canvas);resize();animate();
 $('base').onchange=()=>{$('puckFields').classList.toggle('hidden',$('base').value!=='puck');$('tripodFields').classList.toggle('hidden',$('base').value!=='tripod');build()};$('mount').onchange=()=>{if($('mount').value==='bambu'){$('mountD').value=59;$('mountH').value=18;$('mountNote').textContent='Стартовые ориентиры для Bambu LED Kit 001. Измерьте свой комплект.'}else{$('mountD').value=40;$('mountH').value=25;$('mountNote').textContent='Посадка E27 не универсальна. Измерьте корпус и фиксатор своего патрона.'}build()};let liveTimer=null;document.querySelectorAll('input,select').forEach(el=>el.addEventListener('input',()=>{updateLabels();clearTimeout(liveTimer);liveTimer=setTimeout(build,260)}));$('regen').onclick=()=>{clearTimeout(liveTimer);build()};let exploded=false;$('explode').onclick=()=>{exploded=!exploded;Object.values(parts).forEach(m=>{if(m.name.includes('Основание')||m.name.includes('ступица')||m.name.includes('Ножка')||m.name.includes('площадка'))m.position.y+=(exploded?-45:45)});$('explode').textContent=exploded?'Собрать':'Разобрать сборку'};
