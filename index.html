@@ -47,10 +47,60 @@ input[type=range]{width:100%;height:30px;accent-color:var(--accent);touch-action
 <script type="module">
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {mergeVertices} from 'three/addons/utils/BufferGeometryUtils.js';
 const $=id=>document.getElementById(id),canvas=$('view');const scene=new THREE.Scene();scene.background=new THREE.Color(0x111318);const camera=new THREE.PerspectiveCamera(42,1,.1,2000);camera.position.set(260,210,310);const renderer=new THREE.WebGLRenderer({canvas,antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.outputColorSpace=THREE.SRGBColorSpace;const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.target.set(0,90,0);scene.add(new THREE.HemisphereLight(0xffffff,0x49404a,2));const key=new THREE.DirectionalLight(0xffffff,2.4);key.position.set(150,260,180);scene.add(key);const fill=new THREE.PointLight(0xffb45e,90,500);fill.position.set(0,130,0);scene.add(fill);const grid=new THREE.GridHelper(420,21,0x484d59,0x282c35);grid.position.y=-.5;scene.add(grid);const assembly=new THREE.Group();scene.add(assembly);let parts={};
 function mat(color,metal=0,rough=.55){return new THREE.MeshStandardMaterial({color,metalness:metal,roughness:rough,side:THREE.DoubleSide})}const ivory=mat(0xe9d8b8),dark=mat(0x343943,.25),orange=mat(0xe99a48,.25);
 function addMesh(name,geo,material,pos=[0,0,0]){let m=new THREE.Mesh(geo,material);m.name=name;m.position.set(...pos);assembly.add(m);parts[name]=m;return m}function boxGeo(x,y,z){return new THREE.BoxGeometry(x,y,z)}function cylinder(r1,r2,h,seg=96){return new THREE.CylinderGeometry(r1,r2,h,seg,1,false)}
-function makeGyroid(h,d,cell,thick,openness){const nx=52,ny=52,nz=Math.max(40,Math.round(52*h/d)),R=d/2,sx=d/(nx-1),sy=d/(ny-1),sz=h/(nz-1),values=new Float32Array(nx*ny*nz),threshold=Math.max(.12,Math.min(.75,openness*1.65)),idx=(i,j,k)=>(k*ny+j)*nx+i;for(let k=0;k<nz;k++)for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){const x=i*sx-R,y=j*sy-R,z=k*sz,r=Math.hypot(x,y),X=x/R*Math.PI*d/cell,Y=y/R*Math.PI*d/cell,Z=(z/h)*Math.PI*h/cell,g=Math.sin(X)*Math.cos(Y)+Math.sin(Y)*Math.cos(Z)+Math.sin(Z)*Math.cos(X),shell=Math.abs(g)-threshold;values[idx(i,j,k)]=Math.max(shell,(r-R+2)/R,(-r+R*.72+2)/R,(-z+1)/h,(z-h+1)/h)}const verts=[],tets=[[0,5,1,6],[0,1,2,6],[0,2,3,6],[0,3,7,6],[0,7,4,6],[0,4,5,6]],corners=[[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1]],interp=(a,b,va,vb)=>{let t=va/(va-vb);return[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t]},tri=(a,b,c)=>verts.push(...a,...b,...c);for(let k=0;k<nz-1;k++)for(let j=0;j<ny-1;j++)for(let i=0;i<nx-1;i++){let p=corners.map(([dx,dy,dz])=>[(i+dx)*sx-R,(j+dy)*sy-R,(k+dz)*sz]),v=corners.map(([dx,dy,dz])=>values[idx(i+dx,j+dy,k+dz)]);for(const tet of tets){let ins=tet.filter(q=>v[q]<0),outs=tet.filter(q=>v[q]>=0);if(!ins.length||!outs.length)continue;if(ins.length===1){tri(interp(p[ins[0]],p[outs[0]],v[ins[0]],v[outs[0]]),interp(p[ins[0]],p[outs[1]],v[ins[0]],v[outs[1]]),interp(p[ins[0]],p[outs[2]],v[ins[0]],v[outs[2]]))}else if(ins.length===3){let a=interp(p[outs[0]],p[ins[0]],v[outs[0]],v[ins[0]]),b=interp(p[outs[0]],p[ins[1]],v[outs[0]],v[ins[1]]),c=interp(p[outs[0]],p[ins[2]],v[outs[0]],v[ins[2]]);tri(a,c,b)}else{let a=interp(p[ins[0]],p[outs[0]],v[ins[0]],v[outs[0]]),b=interp(p[ins[0]],p[outs[1]],v[ins[0]],v[outs[1]]),c=interp(p[ins[1]],p[outs[0]],v[ins[1]],v[outs[0]]),e=interp(p[ins[1]],p[outs[1]],v[ins[1]],v[outs[1]]);tri(a,b,c);tri(b,e,c)}}}const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));g.computeVertexNormals();return g}
+function makeGyroid(h,d,cell,thick,openness){
+ // Implicit gyroid sheet clipped to a cylindrical annulus. Grid spacing is physical,
+ // not a fixed count: this avoids visible voxel/block artifacts at normal lamp sizes.
+ const step=2.4, nx=Math.ceil(d/step)+1, ny=nx, nz=Math.ceil(h/step)+1;
+ const R=d/2, outer=R-1.2, inner=R-Math.max(10,Math.min(18,d*.105));
+ const sx=d/(nx-1), sy=d/(ny-1), sz=h/(nz-1);
+ const values=new Float32Array(nx*ny*nz), idx=(i,j,k)=>(k*ny+j)*nx+i;
+ const wave=2*Math.PI/cell;
+ const threshold=Math.max(.12,Math.min(.9,(thick/cell)*2*Math.PI*1.45+(openness-.34)*1.05));
+ for(let k=0;k<nz;k++){
+  const z=k*sz;
+  for(let j=0;j<ny;j++){
+   const y=j*sy-R;
+   for(let i=0;i<nx;i++){
+    const x=i*sx-R, r=Math.hypot(x,y);
+    const X=x*wave,Y=y*wave,Z=z*wave;
+    const g=Math.sin(X)*Math.cos(Y)+Math.sin(Y)*Math.cos(Z)+Math.sin(Z)*Math.cos(X);
+    // Negative values are printable material. The annular clip forms a true shade wall.
+    const gyroid=Math.abs(g)-threshold;
+    const radialOuter=r-outer, radialInner=inner-r;
+    const bottom=-z, top=z-h;
+    values[idx(i,j,k)]=Math.max(gyroid,radialOuter,radialInner,bottom,top);
+   }
+  }
+ }
+ const verts=[], tets=[[0,5,1,6],[0,1,2,6],[0,2,3,6],[0,3,7,6],[0,7,4,6],[0,4,5,6]];
+ const corners=[[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1]];
+ const interp=(a,b,va,vb)=>{const t=va/(va-vb);return[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t]};
+ const tri=(a,b,c)=>verts.push(...a,...b,...c);
+ for(let k=0;k<nz-1;k++)for(let j=0;j<ny-1;j++)for(let i=0;i<nx-1;i++){
+  const p=corners.map(([dx,dy,dz])=>[(i+dx)*sx-R,(j+dy)*sy-R,(k+dz)*sz]);
+  const v=corners.map(([dx,dy,dz])=>values[idx(i+dx,j+dy,k+dz)]);
+  for(const tet of tets){
+   const ins=tet.filter(q=>v[q]<0),outs=tet.filter(q=>v[q]>=0);
+   if(!ins.length||!outs.length)continue;
+   if(ins.length===1){
+    tri(interp(p[ins[0]],p[outs[0]],v[ins[0]],v[outs[0]]),interp(p[ins[0]],p[outs[1]],v[ins[0]],v[outs[1]]),interp(p[ins[0]],p[outs[2]],v[ins[0]],v[outs[2]]));
+   }else if(ins.length===3){
+    const a=interp(p[outs[0]],p[ins[0]],v[outs[0]],v[ins[0]]),b=interp(p[outs[0]],p[ins[1]],v[outs[0]],v[ins[1]]),c=interp(p[outs[0]],p[ins[2]],v[outs[0]],v[ins[2]]);
+    tri(a,c,b);
+   }else{
+    const a=interp(p[ins[0]],p[outs[0]],v[ins[0]],v[outs[0]]),b=interp(p[ins[0]],p[outs[1]],v[ins[0]],v[outs[1]]),c=interp(p[ins[1]],p[outs[0]],v[ins[1]],v[outs[0]]),e=interp(p[ins[1]],p[outs[1]],v[ins[1]],v[outs[1]]);
+    tri(a,b,c);tri(b,e,c);
+   }
+  }
+ }
+ const raw=new THREE.BufferGeometry();raw.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));
+ const smooth=mergeVertices(raw,1e-4);raw.dispose();smooth.computeVertexNormals();
+ return smooth;
+}
 function clear(){while(assembly.children.length){let o=assembly.children.pop();if(o.geometry)o.geometry.dispose()}}
 function buildBayonet(y,diam,clearance,lugs){const rad=diam/2;addMesh('Байонетное кольцо',cylinder(rad,rad,5,96),dark,[0,y,0]);for(let n=0;n<lugs;n++){let a=n*Math.PI*2/lugs,lug=addMesh('Выступ байонета '+(n+1),boxGeo(9,4,7),orange,[Math.cos(a)*(rad-2),y+3,Math.sin(a)*(rad-2)]);lug.rotation.y=-a}}
 function build(){const h=+$('height').value,d=+$('diam').value,cell=+$('cell').value,t=+$('thick').value,op=+$('open').value,base=$('base').value,clearance=+$('clearance').value,lugs=+$('lugs').value;$('status').textContent='Генерация Gyroid-сетки…';clear();parts={};addMesh('Абажур Gyroid',makeGyroid(h,d,cell,t,op),ivory);const neckD=44,neckH=13;addMesh('Шейка абажура',cylinder(neckD/2,neckD/2,neckH),ivory,[0,-neckH/2+1,0]);buildBayonet(-neckH+3,neckD,clearance,lugs);if(base==='puck'){const pd=+$('pdiam').value,ph=+$('pheight').value;addMesh('Основание таблетка',cylinder(pd/2,pd/2,ph),dark,[0,-ph/2-neckH-2,0]);addMesh('Верхний буртик основания',cylinder(23,23,5),orange,[0,-ph-neckH+1,0])}else{const span=+$('span').value,leg=+$('leg').value;addMesh('Центральная ступица',cylinder(31,31,18),dark,[0,-27-neckH,0]);addMesh('Посадочная площадка',cylinder(24,24,5),orange,[0,-16-neckH,0]);for(let n=0;n<3;n++){let a=n*Math.PI*2/3,m=addMesh('Ножка '+(n+1),new THREE.BoxGeometry(leg,leg,span*.58),dark,[Math.cos(a)*span*.25,-35-neckH,Math.sin(a)*span*.25]);m.rotation.y=-a;m.rotation.x=-.12}}const md=+$('mountD').value,mh=+$('mountH').value;addMesh('Крепёж LED / E27 (эскиз)',cylinder(md/2,md/2,mh),orange,[0,mh/2+2,0]);addMesh('Канал кабеля (визуальный маркер)',cylinder(+$('cable').value/2,+$('cable').value/2,35,24),dark,[0,-h-25,0]);$('status').textContent=`Готово. Абажур ${d} × ${h} мм · ячейка ${cell} мм · основание: ${base==='puck'?'таблетка':'тренога'}. Посадки предварительные.`;updateLabels()}
