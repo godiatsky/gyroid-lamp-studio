@@ -53,35 +53,37 @@ const $=id=>document.getElementById(id),canvas=$('view');const scene=new THREE.S
 function mat(color,metal=0,rough=.55){return new THREE.MeshStandardMaterial({color,metalness:metal,roughness:rough,side:THREE.DoubleSide})}const ivory=mat(0xe9d8b8),dark=mat(0x343943,.25),orange=mat(0xe99a48,.25);
 function addMesh(name,geo,material,pos=[0,0,0]){let m=new THREE.Mesh(geo,material);m.name=name;m.position.set(...pos);assembly.add(m);parts[name]=m;return m}function boxGeo(x,y,z){return new THREE.BoxGeometry(x,y,z)}function cylinder(r1,r2,h,seg=96){return new THREE.CylinderGeometry(r1,r2,h,seg,1,false)}
 function makeGyroid(h,d,cell,thick,openness){
- // Sheet-TPMS: create a physical-thickness band around the zero-level Gyroid
- // and clip that solid to a finite cylinder. Three.js MarchingCubes extracts
- // the isosurface from the sampled scalar field; no hand-built triangles.
- const resolution=64, material=ivory, maxPolyCount=320000;
- const mc=new MarchingCubes(resolution,material,false,false,maxPolyCount);
+ // Sheet TPMS: a finite-thickness band around the Gyroid zero level.
+ // Coordinates are sampled in the exact normalized domain used internally
+ // by Three.js MarchingCubes: [-1, 1-2/resolution].
+ const resolution=128;
+ const maxPolyCount=900000;
+ const mc=new MarchingCubes(resolution,ivory,false,false,maxPolyCount);
  mc.isolation=0;
  const k=2*Math.PI/cell, halfD=d/2, halfH=h/2;
- const wall=Math.max(0.8,Math.min(4.5,thick));
- const thresholdAdjust=(openness-.34)*.12;
+ const wall=Math.max(1.0,Math.min(4.5,thick));
+ // Small user control shifts the level set, not the cell geometry.
+ const levelShift=(openness-.34)*0.08;
  for(let iz=0;iz<resolution;iz++){
-  const zn=(iz/(resolution-1))*2-1, z=zn*halfH;
+  const zn=(iz-resolution/2)/(resolution/2), z=zn*halfH;
   for(let iy=0;iy<resolution;iy++){
-   const yn=(iy/(resolution-1))*2-1, y=yn*halfD;
+   const yn=(iy-resolution/2)/(resolution/2), y=yn*halfD;
    for(let ix=0;ix<resolution;ix++){
-    const xn=(ix/(resolution-1))*2-1, x=xn*halfD;
+    const xn=(ix-resolution/2)/(resolution/2), x=xn*halfD;
     const X=k*x,Y=k*y,Z=k*z;
     const sx=Math.sin(X),sy=Math.sin(Y),sz=Math.sin(Z);
     const cx=Math.cos(X),cy=Math.cos(Y),cz=Math.cos(Z);
     const g=sx*cy+sy*cz+sz*cx;
-    const gx=k*(cx*cy-sz*sx),gy=k*(-sx*sy+cy*cz),gz=k*(-sy*sz+cz*cx);
-    const grad=Math.max(1e-5,Math.hypot(gx,gy,gz));
-    // First-order signed-distance estimate to the minimal surface.
-    const distance=Math.abs(g)/grad;
-    const sheet=distance-(wall*.5+thresholdAdjust);
-    // Clip the sheet to a cylindrical envelope, including flat top/bottom cuts.
-    const radial=Math.hypot(x,y)-halfD+1.0;
-    const axial=Math.abs(z)-halfH+1.0;
-    const field=Math.max(sheet, radial, axial);
-    mc.setCell(ix,iy,iz,field);
+    const gx=k*(cx*cy-sz*sx);
+    const gy=k*(-sx*sy+cy*cz);
+    const gz=k*(-sy*sz+cz*cx);
+    // First-order metric distance to the implicit Gyroid surface.
+    const grad=Math.max(1e-6,Math.hypot(gx,gy,gz));
+    const signedBand=Math.abs(g)/grad-(wall*.5+levelShift);
+    // Intersection of the sheet band with the cylindrical shade envelope.
+    const cylinder=Math.hypot(x,y)-halfD;
+    const caps=Math.abs(z)-halfH;
+    mc.setCell(ix,iy,iz,Math.max(signedBand,cylinder,caps));
    }
   }
  }
@@ -90,8 +92,6 @@ function makeGyroid(h,d,cell,thick,openness){
  geometry.setDrawRange(0,mc.count);
  geometry.computeBoundingBox();
  geometry.computeBoundingSphere();
- // MarchingCubes works in a normalized [-1,1] cube. The caller scales the mesh
- // to the requested physical diameter and height.
  geometry.userData.tpmsResolution=resolution;
  geometry.userData.triangleCount=mc.count/3;
  mc.geometry=null;
@@ -99,7 +99,7 @@ function makeGyroid(h,d,cell,thick,openness){
 }
 function clear(){while(assembly.children.length){let o=assembly.children.pop();if(o.geometry)o.geometry.dispose()}}
 function buildBayonet(y,diam,clearance,lugs){const rad=diam/2;addMesh('Байонетное кольцо',cylinder(rad,rad,5,96),dark,[0,y,0]);for(let n=0;n<lugs;n++){let a=n*Math.PI*2/lugs,lug=addMesh('Выступ байонета '+(n+1),boxGeo(9,4,7),orange,[Math.cos(a)*(rad-2),y+3,Math.sin(a)*(rad-2)]);lug.rotation.y=-a}}
-function build(){const h=+$('height').value,d=+$('diam').value,cell=+$('cell').value,t=+$('thick').value,op=+$('open').value,base=$('base').value,clearance=+$('clearance').value,lugs=+$('lugs').value;$('status').textContent='Расчёт математической поверхности TPMS…';clear();parts={};const shade=addMesh('Абажур Gyroid',makeGyroid(h,d,cell,t,op),ivory,[0,h/2,0]);shade.scale.set(d/2,h/2,d/2);const neckD=44,neckH=13;addMesh('Шейка абажура',cylinder(neckD/2,neckD/2,neckH),ivory,[0,-neckH/2+1,0]);buildBayonet(-neckH+3,neckD,clearance,lugs);if(base==='puck'){const pd=+$('pdiam').value,ph=+$('pheight').value;addMesh('Основание таблетка',cylinder(pd/2,pd/2,ph),dark,[0,-ph/2-neckH-2,0]);addMesh('Верхний буртик основания',cylinder(23,23,5),orange,[0,-ph-neckH+1,0])}else{const span=+$('span').value,leg=+$('leg').value;addMesh('Центральная ступица',cylinder(31,31,18),dark,[0,-27-neckH,0]);addMesh('Посадочная площадка',cylinder(24,24,5),orange,[0,-16-neckH,0]);for(let n=0;n<3;n++){let a=n*Math.PI*2/3,m=addMesh('Ножка '+(n+1),new THREE.BoxGeometry(leg,leg,span*.58),dark,[Math.cos(a)*span*.25,-35-neckH,Math.sin(a)*span*.25]);m.rotation.y=-a;m.rotation.x=-.12}}const md=+$('mountD').value,mh=+$('mountH').value;addMesh('Крепёж LED / E27 (эскиз)',cylinder(md/2,md/2,mh),orange,[0,mh/2+2,0]);addMesh('Канал кабеля (визуальный маркер)',cylinder(+$('cable').value/2,+$('cable').value/2,35,24),dark,[0,-h-25,0]);$('status').textContent=`Готово. Sheet Gyroid TPMS · ${d} × ${h} мм · ячейка ${cell} мм · сетка 64³. Посадки предварительные.`;updateLabels()}
+function build(){const h=+$('height').value,d=+$('diam').value,cell=+$('cell').value,t=+$('thick').value,op=+$('open').value,base=$('base').value,clearance=+$('clearance').value,lugs=+$('lugs').value;$('status').textContent='Расчёт математической поверхности TPMS…';clear();parts={};const shade=addMesh('Абажур Gyroid',makeGyroid(h,d,cell,t,op),ivory,[0,h/2,0]);shade.scale.set(d/2,h/2,d/2);const neckD=44,neckH=13;addMesh('Шейка абажура',cylinder(neckD/2,neckD/2,neckH),ivory,[0,-neckH/2+1,0]);buildBayonet(-neckH+3,neckD,clearance,lugs);if(base==='puck'){const pd=+$('pdiam').value,ph=+$('pheight').value;addMesh('Основание таблетка',cylinder(pd/2,pd/2,ph),dark,[0,-ph/2-neckH-2,0]);addMesh('Верхний буртик основания',cylinder(23,23,5),orange,[0,-ph-neckH+1,0])}else{const span=+$('span').value,leg=+$('leg').value;addMesh('Центральная ступица',cylinder(31,31,18),dark,[0,-27-neckH,0]);addMesh('Посадочная площадка',cylinder(24,24,5),orange,[0,-16-neckH,0]);for(let n=0;n<3;n++){let a=n*Math.PI*2/3,m=addMesh('Ножка '+(n+1),new THREE.BoxGeometry(leg,leg,span*.58),dark,[Math.cos(a)*span*.25,-35-neckH,Math.sin(a)*span*.25]);m.rotation.y=-a;m.rotation.x=-.12}}const md=+$('mountD').value,mh=+$('mountH').value;addMesh('Крепёж LED / E27 (эскиз)',cylinder(md/2,md/2,mh),orange,[0,mh/2+2,0]);addMesh('Канал кабеля (визуальный маркер)',cylinder(+$('cable').value/2,+$('cable').value/2,35,24),dark,[0,-h-25,0]);$('status').textContent=`Готово. Sheet Gyroid TPMS · ${d} × ${h} мм · ячейка ${cell} мм · сетка 128³. Посадки предварительные.`;updateLabels()}
 function updateLabels(){for(const[id,out]of[['height','hV'],['diam','dV'],['cell','cV'],['thick','tV'],['open','oV'],['pdiam','pdV'],['pheight','phV'],['span','spanV'],['leg','legV'],['clearance','clrV']])$(out).textContent=$(id).value}
 function resize(){let w=canvas.clientWidth,h=canvas.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}function animate(){requestAnimationFrame(animate);controls.update();renderer.render(scene,camera)}new ResizeObserver(resize).observe(canvas);resize();animate();
 $('base').onchange=()=>{$('puckFields').classList.toggle('hidden',$('base').value!=='puck');$('tripodFields').classList.toggle('hidden',$('base').value!=='tripod');build()};$('mount').onchange=()=>{if($('mount').value==='bambu'){$('mountD').value=59;$('mountH').value=18;$('mountNote').textContent='Стартовые ориентиры для Bambu LED Kit 001. Измерьте свой комплект.'}else{$('mountD').value=40;$('mountH').value=25;$('mountNote').textContent='Посадка E27 не универсальна. Измерьте корпус и фиксатор своего патрона.'}build()};let liveTimer=null;document.querySelectorAll('input,select').forEach(el=>el.addEventListener('input',()=>{updateLabels();clearTimeout(liveTimer);liveTimer=setTimeout(build,260)}));$('regen').onclick=()=>{clearTimeout(liveTimer);build()};let exploded=false;$('explode').onclick=()=>{exploded=!exploded;Object.values(parts).forEach(m=>{if(m.name.includes('Основание')||m.name.includes('ступица')||m.name.includes('Ножка')||m.name.includes('площадка'))m.position.y+=(exploded?-45:45)});$('explode').textContent=exploded?'Собрать':'Разобрать сборку'};
