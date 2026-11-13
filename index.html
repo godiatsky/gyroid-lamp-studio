@@ -80,7 +80,7 @@ function makeGyroid(h,d,cell,thick,openness){
     // Clip the sheet to a cylindrical envelope, including flat top/bottom cuts.
     const radial=Math.hypot(x,y)-halfD+1.0;
     const axial=Math.abs(z)-halfH+1.0;
-    const field=Math.max(-sheet, -radial, -axial);
+    const field=Math.max(sheet, radial, axial);
     mc.setCell(ix,iy,iz,field);
    }
   }
